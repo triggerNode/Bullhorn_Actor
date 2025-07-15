@@ -1,0 +1,703 @@
+import "dotenv/config";
+import { Actor } from "apify";
+import { PuppeteerCrawler } from "crawlee";
+
+await Actor.init();
+
+// Hybrid input support: backward-compatible credential resolution
+const input = await Actor.getInput();
+const email = input.email;
+
+// Support both legacy (.env) and new (input) credential methods
+const credentials = {
+  username: input.username || process.env.CRM_USERNAME,
+  password: input.password || process.env.CRM_PASSWORD,
+  crmUrl: input.crmUrl || process.env.CRM_URL,
+};
+
+// Validate credentials are available
+if (!credentials.username || !credentials.password || !credentials.crmUrl) {
+  const missing = [];
+  if (!credentials.username) missing.push("username");
+  if (!credentials.password) missing.push("password");
+  if (!credentials.crmUrl) missing.push("crmUrl");
+
+  throw new Error(
+    `Missing required credentials: ${missing.join(", ")}. ` +
+      `Provide via input parameters or ensure .env file contains: CRM_USERNAME, CRM_PASSWORD, CRM_URL`
+  );
+}
+
+// Security: Log credential source without exposing sensitive data
+const credentialSource = input.username ? "input" : "environment";
+const logSafeCredentials = {
+  username: credentials.username
+    ? credentials.username.substring(0, 3) + "***"
+    : "[missing]",
+  password: "[REDACTED]",
+  crmUrl: credentials.crmUrl,
+  source: credentialSource,
+};
+
+console.log(
+  `🔐 Using credentials from ${credentialSource}:`,
+  JSON.stringify(logSafeCredentials)
+);
+
+// INPUT = { "email": "foo@bar.com" } or { "email": "foo@bar.com", "username": "user", "password": "pass", "crmUrl": "url" }
+
+const crawler = new PuppeteerCrawler({
+  maxRequestsPerCrawl: 1,
+  async requestHandler({ page, log }) {
+    /***** 1️⃣  LOGIN *****/
+    await page.goto(credentials.crmUrl, { waitUntil: "networkidle2" });
+
+    // Wait for and fill username field
+    const usernameSelector =
+      'input[placeholder*="Username"], input[type="text"], input[name*="username"]';
+    await page.waitForSelector(usernameSelector, { visible: true });
+    await page.type(usernameSelector, credentials.username);
+
+    // Wait for and fill password field
+    const passwordSelector =
+      'input[placeholder*="Password"], input[type="password"], input[name*="password"]';
+    await page.waitForSelector(passwordSelector, { visible: true });
+    await page.type(passwordSelector, credentials.password);
+
+    // Click login button
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "load" }),
+      page.evaluate(() => {
+        // Find button by text content or type
+        const button =
+          document.querySelector('button[type="submit"]') ||
+          document.querySelector('input[type="submit"]') ||
+          Array.from(document.querySelectorAll("button")).find(
+            (btn) =>
+              btn.textContent.includes("LOG IN") ||
+              btn.textContent.includes("Login")
+          );
+        if (button) button.click();
+      }),
+    ]);
+
+    /***** 2️⃣  SEARCH *****/
+    // Wait for page to fully load after login and potential redirects
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Log current URL to see where we ended up after login
+    const currentUrl = page.url();
+    log.info(`Current URL after login: ${currentUrl}`);
+
+    // If we're still on login page, wait for redirect to main interface
+    if (currentUrl.includes("universal-login")) {
+      log.info("Still on login page, waiting for redirect...");
+      try {
+        await page.waitForNavigation({
+          waitUntil: "networkidle2",
+          timeout: 10000,
+        });
+        log.info(`Redirected to: ${page.url()}`);
+      } catch (e) {
+        log.info("No automatic redirect detected, continuing...");
+      }
+    }
+
+    // Handle Angular Shadow DOM / Router Outlet structure
+    log.info("Looking for Angular mainframe router-outlet...");
+
+    // Wait for Angular to fully load the mainframe content (production needs more time)
+    await new Promise((resolve) => setTimeout(resolve, 6000));
+    log.info("Waited 6 seconds for Angular to load...");
+
+    // Verify we're on the main app page (not login page) before looking for Find button
+    const pageUrl = page.url();
+    log.info(`Current page URL: ${pageUrl}`);
+
+    if (!pageUrl.includes("app.bullhornstaffing.com")) {
+      throw new Error(
+        `Expected to be on app.bullhornstaffing.com but currently on: ${pageUrl}`
+      );
+    }
+
+    // CRITICAL: Click the "Find" button first to reveal the search interface
+    log.info(
+      "🔍 Looking for the Find button to reveal search interface (on app.bullhornstaffing.com)..."
+    );
+
+    // --- NEW FIND BUTTON LOGIC ---
+    let findButtonFound = false;
+    let findButtonError = null;
+    try {
+      // Wait for page to be ready first - look for any common header elements
+      await page
+        .waitForSelector(
+          'header, [class*="header"], [class*="nav"], .toolbar, [role="banner"]',
+          {
+            visible: true,
+            timeout: 10000,
+          }
+        )
+        .catch(() => {
+          // If no standard header found, just wait a bit for page to stabilize
+          return new Promise((resolve) => setTimeout(resolve, 1000));
+        });
+
+      findButtonFound = await page.evaluate(() => {
+        // Search for Find button across the entire page, not just in nav
+        // Look for button, a, div, or span with text "Find" anywhere in the page
+        const allElements = Array.from(
+          document.querySelectorAll('button, a, div, span, [role="button"]')
+        );
+
+        for (const el of allElements) {
+          const text = (el.textContent || el.innerText || "").trim();
+          // Check if element contains "Find" text and is likely clickable
+          if (text === "Find" || text.toLowerCase() === "find") {
+            // Additional check: make sure element is visible and in the top area of page
+            const rect = el.getBoundingClientRect();
+            if (
+              rect.top < window.innerHeight / 2 &&
+              rect.width > 0 &&
+              rect.height > 0
+            ) {
+              el.click();
+              return true;
+            }
+          }
+        }
+
+        // Fallback: look for elements with aria-label or title containing "Find"
+        const fallbackElements = Array.from(
+          document.querySelectorAll("[aria-label], [title]")
+        );
+        for (const el of fallbackElements) {
+          const label = (
+            el.getAttribute("aria-label") ||
+            el.getAttribute("title") ||
+            ""
+          ).toLowerCase();
+          if (label.includes("find")) {
+            const rect = el.getBoundingClientRect();
+            if (
+              rect.top < window.innerHeight / 2 &&
+              rect.width > 0 &&
+              rect.height > 0
+            ) {
+              el.click();
+              return true;
+            }
+          }
+        }
+
+        // Production: Debug logging removed for performance
+
+        return false;
+      });
+    } catch (e) {
+      findButtonError = e;
+      findButtonFound = false;
+    }
+
+    if (findButtonFound) {
+      log.info(
+        "✅ Successfully clicked Find button. Waiting for search input animation..."
+      );
+      // Wait for the animated search input to appear
+      try {
+        await page.waitForSelector(
+          'input[placeholder="Find anything in Bullhorn..."]',
+          { visible: true, timeout: 7000 }
+        );
+        log.info("✅ Search input appeared.");
+      } catch (e) {
+        log.info("❌ Search input did not appear after clicking Find.");
+        throw new Error("Search input did not appear after clicking Find.");
+      }
+    } else {
+      log.info("❌ Could not find Find button in nav bar.");
+      if (findButtonError) log.info(`Find button error: ${findButtonError}`);
+      throw new Error("Could not find Find button in nav bar.");
+    }
+
+    // --- SEARCH INPUT INTERACTION WITH CACHE CLEARING ---
+    try {
+      const searchInput = 'input[placeholder="Find anything in Bullhorn..."]';
+
+      // Step 1: Focus and clear any existing content (safer method)
+      await page.focus(searchInput);
+
+      // Use Ctrl+A and direct typing to replace content (more reliable than Delete)
+      await page.keyboard.down("Control");
+      await page.keyboard.press("KeyA");
+      await page.keyboard.up("Control");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // Step 2: Type the email (will replace selected content)
+      await page.type(searchInput, email, { delay: 80 });
+      log.info(`🔎 Typed email: ${email} - triggering fresh search...`);
+
+      // Step 3: Wait for Angular to process the search
+      log.info("⏳ Waiting for Angular search to complete...");
+      await new Promise((resolve) => setTimeout(resolve, 3000)); // Standard wait for search
+
+      log.info("✅ Search processing completed, checking for results...");
+    } catch (e) {
+      log.info("❌ Failed to interact with search input.");
+      throw new Error("Failed to interact with search input.");
+    }
+
+    // --- SMART DROPDOWN DETECTION WITH EARLY EXIT ---
+    let dropdownFound = false;
+    let resultRows = [];
+    let dropdownSelector = null;
+
+    // Production-optimized selector priority: adjusted timeouts for reliability
+    const dropdownSelectors = [
+      { selector: "novo-list", timeout: 2500 }, // Primary: Known to work, production timeout
+      { selector: '[role="listbox"]', timeout: 1500 }, // ARIA standard
+      { selector: ".dropdown-menu", timeout: 1500 }, // Bootstrap standard
+      { selector: '[class*="dropdown"]', timeout: 1200 }, // CSS class pattern
+      { selector: '[class*="autocomplete"]', timeout: 1200 }, // Autocomplete pattern
+    ];
+
+    // Smart detection with early exit
+    for (const { selector, timeout } of dropdownSelectors) {
+      try {
+        await page.waitForSelector(selector, { visible: true, timeout });
+        dropdownSelector = selector;
+        dropdownFound = true;
+        log.info(
+          `✅ Found dropdown with selector: ${selector} (${timeout}ms timeout)`
+        );
+        break; // Exit immediately when found
+      } catch (e) {
+        // Continue to next selector
+      }
+    }
+
+    if (dropdownFound) {
+      // Extract results from the dropdown using Novo-specific structure
+      resultRows = await page.evaluate((selector) => {
+        if (selector === "novo-list") {
+          // Novo framework specific extraction
+          const listItems = Array.from(
+            document.querySelectorAll("novo-list-item")
+          );
+          return listItems
+            .map((item) => {
+              // Method 1: Extract from data-automation-id (most reliable)
+              const automationId = item.getAttribute("data-automation-id");
+              let candidateId = null;
+              if (automationId && automationId.includes("Candidate-")) {
+                candidateId = automationId.replace("Candidate-", "");
+              }
+
+              // Method 2: Extract from item-title span text (fallback)
+              if (!candidateId) {
+                const titleSpan = item.querySelector("item-title span");
+                if (titleSpan) {
+                  const match = titleSpan.textContent.match(/^(\d+)\s*\|/);
+                  candidateId = match ? match[1] : null;
+                }
+              }
+
+              // Method 3: Enhanced ID extraction patterns (additional fallback)
+              if (!candidateId) {
+                const text = item.textContent || item.innerText || "";
+                let idMatch = text.match(/^(\d+)\s*\|/);
+                if (!idMatch) {
+                  idMatch = text.match(/(\d{4,})\s*\|/);
+                }
+                if (!idMatch) {
+                  idMatch = text.match(/(\d{4,})/);
+                }
+                candidateId = idMatch ? idMatch[1] : null;
+              }
+
+              // Enhanced email extraction with multiple strategies
+              let extractedEmail = null;
+
+              // Strategy 1: Multiple regex patterns on textContent
+              const emailPatterns = [
+                /[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/, // Current pattern
+                /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/, // More comprehensive
+                /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/, // Word boundary
+                /[^\s]+@[^\s]+\.[^\s]+/, // Simple non-whitespace
+              ];
+
+              const text = item.textContent || item.innerText || "";
+              for (const pattern of emailPatterns) {
+                const match = text.match(pattern);
+                if (match) {
+                  extractedEmail = match[0];
+                  break;
+                }
+              }
+
+              // Strategy 2: Search nested elements if textContent search failed
+              if (!extractedEmail) {
+                const nestedElements = item.querySelectorAll("*");
+                for (const el of nestedElements) {
+                  const elText = el.textContent || el.innerText || "";
+                  for (const pattern of emailPatterns) {
+                    const match = elText.match(pattern);
+                    if (match) {
+                      extractedEmail = match[0];
+                      break;
+                    }
+                  }
+                  if (extractedEmail) break;
+                }
+              }
+
+              // Strategy 3: Check attributes for email data
+              if (!extractedEmail) {
+                const emailAttrs = [
+                  "data-email",
+                  "data-value",
+                  "title",
+                  "aria-label",
+                ];
+                for (const attr of emailAttrs) {
+                  const attrValue = item.getAttribute(attr);
+                  if (attrValue && attrValue.includes("@")) {
+                    for (const pattern of emailPatterns) {
+                      const match = attrValue.match(pattern);
+                      if (match) {
+                        extractedEmail = match[0];
+                        break;
+                      }
+                    }
+                    if (extractedEmail) break;
+                  }
+                }
+              }
+
+              // Strategy 4: Normalize and clean extracted email
+              if (extractedEmail) {
+                extractedEmail = extractedEmail.trim().toLowerCase();
+                // Remove any trailing punctuation that might have been captured
+                extractedEmail = extractedEmail.replace(/[.,;:)}\]]+$/, "");
+              }
+
+              return {
+                id: candidateId,
+                email: extractedEmail,
+                text: item.textContent.trim(),
+                hasContent: !!(candidateId || extractedEmail),
+                source: "novo-list-item",
+              };
+            })
+            .filter((item) => item.hasContent);
+        } else {
+          // Generic dropdown extraction (fallback)
+          const dropdown = document.querySelector(selector);
+          if (!dropdown) return [];
+
+          const items = Array.from(dropdown.querySelectorAll("*")).filter(
+            (el) => {
+              const text = el.textContent || el.innerText || "";
+              return text.trim().length > 10;
+            }
+          );
+
+          return items
+            .map((item) => {
+              const text = item.textContent || item.innerText || "";
+              let idMatch = text.match(/^(\d+)\s*\|/);
+              if (!idMatch) {
+                idMatch = text.match(/(\d{4,})\s*\|/);
+              }
+              if (!idMatch) {
+                idMatch = text.match(/(\d{4,})/);
+              }
+
+              const emailMatch = text.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
+
+              return {
+                id: idMatch ? idMatch[1] : null,
+                email: emailMatch ? emailMatch[0] : null,
+                text: text.trim(),
+                hasContent: !!(idMatch || emailMatch),
+                source: "generic-dropdown",
+              };
+            })
+            .filter((item) => item.hasContent);
+        }
+      }, dropdownSelector);
+
+      log.info(
+        `Found ${resultRows.length} dropdown items with relevant content using ${dropdownSelector}.`
+      );
+
+      // Log summary for monitoring
+      if (resultRows.length > 0) {
+        log.info(
+          `📊 Analysis: ${resultRows.length} items found, checking for email matches...`
+        );
+      }
+
+      // Early exit if we have quality results
+      if (resultRows.length > 0) {
+        const hasEmailMatch = resultRows.some(
+          (row) => row.email && row.email.toLowerCase() === email.toLowerCase()
+        );
+        if (hasEmailMatch) {
+          log.info("✅ Early exit: Found email match in dropdown results");
+          dropdownFound = true; // Mark as found to skip fallbacks
+        } else {
+          log.info(
+            "⚠️ No email match found in dropdown results, continuing to fallbacks..."
+          );
+        }
+      }
+    }
+
+    // --- SMART FALLBACK: POSITIONING-BASED SEARCH ---
+    if (!dropdownFound || resultRows.length === 0) {
+      log.info(
+        "Dropdown not found with standard selectors. Trying positioning-based search..."
+      );
+
+      // Get search input position for reference
+      const searchInputRect = await page.evaluate(() => {
+        const input = document.querySelector(
+          'input[placeholder="Find anything in Bullhorn..."]'
+        );
+        return input ? input.getBoundingClientRect() : null;
+      });
+
+      if (searchInputRect) {
+        resultRows = await page.evaluate((rect) => {
+          // Find elements positioned below the search input
+          const allElements = Array.from(document.querySelectorAll("*"));
+          const candidateElements = allElements.filter((el) => {
+            const elRect = el.getBoundingClientRect();
+            const text = el.textContent || el.innerText || "";
+
+            return (
+              elRect.top > rect.bottom &&
+              elRect.top < rect.bottom + 300 && // Within 300px below input
+              elRect.left >= rect.left - 100 &&
+              elRect.right <= rect.right + 100 &&
+              text.trim().length > 5 &&
+              (text.includes("@") || /^\d+\s*\|/.test(text)) // Contains email or ID pattern
+            );
+          });
+
+          return candidateElements
+            .map((el) => {
+              const text = el.textContent || el.innerText || "";
+              // Enhanced ID extraction patterns
+              let idMatch = text.match(/^(\d+)\s*\|/); // Original: "50703 | amy williams"
+              if (!idMatch) {
+                idMatch = text.match(/(\d{4,})\s*\|/); // Flexible: "text 50703 | amy"
+              }
+              if (!idMatch) {
+                idMatch = text.match(/(\d{4,})/); // Any 4+ digit number
+              }
+
+              const emailMatch = text.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
+
+              return {
+                id: idMatch ? idMatch[1] : null,
+                email: emailMatch ? emailMatch[0] : null,
+                text: text.trim(),
+              };
+            })
+            .filter((item) => item.email || item.id);
+        }, searchInputRect);
+
+        if (resultRows.length > 0) {
+          dropdownFound = true;
+          log.info(
+            `✅ Found ${resultRows.length} results using positioning-based search.`
+          );
+        }
+      }
+    }
+
+    // --- FINAL FALLBACK: COMPREHENSIVE DOM SEARCH ---
+    if (!dropdownFound || resultRows.length === 0) {
+      log.info(
+        "Trying comprehensive DOM search for any elements containing the searched email..."
+      );
+
+      resultRows = await page.evaluate((searchEmail) => {
+        const allElements = Array.from(document.querySelectorAll("*"));
+        const matchingElements = allElements.filter((el) => {
+          const text = el.textContent || el.innerText || "";
+          return text.toLowerCase().includes(searchEmail.toLowerCase());
+        });
+
+        return matchingElements
+          .map((el) => {
+            const text = el.textContent || el.innerText || "";
+            let candidateId = null;
+
+            // Check if this element is part of Novo framework
+            const isNovoItem =
+              el.tagName.toLowerCase() === "novo-list-item" ||
+              el.closest("novo-list-item");
+
+            if (isNovoItem) {
+              const novoItem =
+                el.tagName.toLowerCase() === "novo-list-item"
+                  ? el
+                  : el.closest("novo-list-item");
+
+              // Method 1: Extract from data-automation-id
+              const automationId = novoItem.getAttribute("data-automation-id");
+              if (automationId && automationId.includes("Candidate-")) {
+                candidateId = automationId.replace("Candidate-", "");
+              }
+
+              // Method 2: Extract from item-title span text
+              if (!candidateId) {
+                const titleSpan = novoItem.querySelector("item-title span");
+                if (titleSpan) {
+                  const match = titleSpan.textContent.match(/^(\d+)\s*\|/);
+                  candidateId = match ? match[1] : null;
+                }
+              }
+            }
+
+            // Fallback: Enhanced ID extraction patterns
+            if (!candidateId) {
+              let idMatch = text.match(/^(\d+)\s*\|/); // Original: "50703 | amy williams"
+              if (!idMatch) {
+                idMatch = text.match(/(\d{4,})\s*\|/); // Flexible: "text 50703 | amy"
+              }
+              if (!idMatch) {
+                idMatch = text.match(/(\d{4,})/); // Any 4+ digit number
+              }
+              candidateId = idMatch ? idMatch[1] : null;
+            }
+
+            const emailMatch = text.match(/[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/);
+
+            return {
+              id: candidateId,
+              email: emailMatch ? emailMatch[0] : null,
+              text: text.trim(),
+              tagName: el.tagName.toLowerCase(),
+              isNovo: isNovoItem,
+              source: "comprehensive-dom-search",
+            };
+          })
+          .filter(
+            (item) =>
+              item.email &&
+              item.email.toLowerCase() === searchEmail.toLowerCase()
+          );
+      }, email);
+
+      if (resultRows.length > 0) {
+        dropdownFound = true;
+        log.info(
+          `✅ Found ${resultRows.length} results using comprehensive DOM search.`
+        );
+      }
+    }
+
+    // --- PRODUCTION: DEBUG OVERHEAD REMOVED FOR PERFORMANCE ---
+
+    // --- PROCESS RESULTS WITH ENHANCED MATCHING ---
+    let exists = false;
+    let candidateId = null;
+    let matchType = null;
+
+    if (dropdownFound && resultRows.length > 0) {
+      const searchEmail = email.toLowerCase().trim();
+
+      // Strategy 1: Exact email match
+      let match = resultRows.find(
+        (row) => row.email && row.email.toLowerCase().trim() === searchEmail
+      );
+      if (match) {
+        exists = true;
+        candidateId = match.id;
+        matchType = "exact";
+        log.info(
+          `✅ Email found in CRM (exact match). Candidate ID: ${candidateId}`
+        );
+      }
+
+      // Strategy 2: Partial email match (if no exact match)
+      if (!match) {
+        match = resultRows.find(
+          (row) =>
+            row.email && searchEmail.includes(row.email.toLowerCase().trim())
+        );
+        if (match) {
+          exists = true;
+          candidateId = match.id;
+          matchType = "partial";
+          log.info(
+            `✅ Email found in CRM (partial match). Candidate ID: ${candidateId}`
+          );
+        }
+      }
+
+      // Strategy 3: Text content contains search email (fallback)
+      if (!match) {
+        match = resultRows.find(
+          (row) => row.text && row.text.toLowerCase().includes(searchEmail)
+        );
+        if (match) {
+          exists = true;
+          candidateId = match.id;
+          matchType = "text_contains";
+          log.info(
+            `✅ Email found in CRM (text contains). Candidate ID: ${candidateId}`
+          );
+        }
+      }
+
+      // Strategy 4: Username match (very last resort)
+      if (!match) {
+        const username = searchEmail.split("@")[0];
+        match = resultRows.find(
+          (row) =>
+            row.text && row.text.toLowerCase().includes(username.toLowerCase())
+        );
+        if (match) {
+          exists = true;
+          candidateId = match.id;
+          matchType = "username";
+          log.info(
+            `✅ Email found in CRM (username match). Candidate ID: ${candidateId}`
+          );
+        }
+      }
+
+      if (!match) {
+        log.info("❌ No email match found with any strategy.");
+      }
+    } else {
+      log.info("No results found for the given email.");
+    }
+
+    // --- RETURN JSON ---
+    const result = {
+      email,
+      exists,
+      candidateId,
+      matchType, // Added for debugging: exact, partial, text_contains, username, or null
+      timestamp: new Date().toISOString(),
+    };
+
+    // For dataset (backup)
+    await Actor.pushData(result);
+
+    log.info(
+      `${email} ${exists ? "FOUND" : "NOT found"} ${candidateId ?? ""}`.trim()
+    );
+
+    // For Zapier integration - exit with result directly
+    await Actor.exit(result);
+  },
+});
+
+await crawler.run([credentials.crmUrl]);

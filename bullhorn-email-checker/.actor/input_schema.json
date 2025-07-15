@@ -1,0 +1,38 @@
+{
+  "title": "Bullhorn Email Checker Input",
+  "description": "Input schema for checking if an email exists in Bullhorn CRM. All fields are required for Apify deployment.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "email": {
+      "title": "Email Address",
+      "type": "string",
+      "description": "The email address to search for in Bullhorn CRM candidate database",
+      "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+      "example": "john.doe@example.com",
+      "editor": "textfield"
+    },
+    "username": {
+      "title": "CRM Username",
+      "type": "string",
+      "description": "Bullhorn CRM username (required for Apify deployment)",
+      "example": "your.username",
+      "editor": "textfield"
+    },
+    "password": {
+      "title": "CRM Password",
+      "type": "string",
+      "description": "Bullhorn CRM password (required for Apify deployment)",
+      "editor": "textfield"
+    },
+    "crmUrl": {
+      "title": "CRM URL",
+      "type": "string",
+      "description": "Bullhorn CRM login URL",
+      "default": "https://universal.bullhornstaffing.com/universal-login/login",
+      "example": "https://universal.bullhornstaffing.com/universal-login/login",
+      "editor": "textfield"
+    }
+  },
+  "required": ["email", "username", "password", "crmUrl"]
+}

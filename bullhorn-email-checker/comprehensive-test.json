@@ -1,0 +1,60 @@
+{
+  "testEmails": [
+    {
+      "email": "amy@triggernode.com",
+      "expectedResult": "FOUND",
+      "expectedCandidateId": "50703",
+      "source": "performance docs + test files",
+      "notes": "Known working from multiple references"
+    },
+    {
+      "email": "jstoner20@yahoo.com",
+      "expectedResult": "FOUND",
+      "expectedCandidateId": "50781",
+      "source": "recent test + screenshots",
+      "notes": "Just verified working, in screenshots"
+    },
+    {
+      "email": "t.wollen@gmail.com",
+      "expectedResult": "FOUND",
+      "expectedCandidateId": "50738",
+      "source": "screenshots + performance docs",
+      "notes": "Was failing, now fixed - critical test"
+    },
+    {
+      "email": "amy3@triggernode.com",
+      "expectedResult": "FOUND",
+      "expectedCandidateId": "50703",
+      "source": "screenshots",
+      "notes": "From user screenshots - different amy variant"
+    },
+    {
+      "email": "aarontimm@gmail.com",
+      "expectedResult": "FOUND",
+      "expectedCandidateId": "21708",
+      "source": "screenshots",
+      "notes": "Aaron Timm from user screenshots"
+    },
+    {
+      "email": "rjackson@irish.com",
+      "expectedResult": "FOUND",
+      "expectedCandidateId": "10189",
+      "source": "screenshots",
+      "notes": "Renee Jackson from user screenshots"
+    },
+    {
+      "email": "nonexistent@test.com",
+      "expectedResult": "NOT_FOUND",
+      "expectedCandidateId": null,
+      "source": "negative test",
+      "notes": "Should definitely not exist - negative validation"
+    },
+    {
+      "email": "fake@nowhere.xyz",
+      "expectedResult": "NOT_FOUND",
+      "expectedCandidateId": null,
+      "source": "negative test",
+      "notes": "Another negative test case"
+    }
+  ]
+}

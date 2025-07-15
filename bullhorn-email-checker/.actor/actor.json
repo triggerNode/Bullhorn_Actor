@@ -1,0 +1,19 @@
+{
+  "actorSpecification": 1,
+  "name": "bullhorn-email-checker",
+  "title": "Bullhorn Email Checker",
+  "description": "Checks if an email address exists in Bullhorn CRM candidate database. Supports both environment-based and input-based credentials for flexible deployment.",
+  "version": "2.1",
+  "meta": {
+    "templateId": "puppeteer_crawler"
+  },
+  "input": "input_schema.json",
+  "dockerfile": "./Dockerfile",
+  "readme": "./README.md",
+  "categories": ["AUTOMATION", "BUSINESS"],
+  "defaultRunOptions": {
+    "build": "latest",
+    "timeoutSecs": 300,
+    "memoryMbytes": 4096
+  }
+}

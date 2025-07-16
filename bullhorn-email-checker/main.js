@@ -2,11 +2,28 @@ import "dotenv/config";
 import { Actor } from "apify";
 import { PuppeteerCrawler } from "crawlee";
 
+// DIAGNOSTIC MODE: Comprehensive timing analysis
+const DIAGNOSTIC_START = Date.now();
+const timings = [];
+
+function logTiming(step, description = "") {
+  const now = Date.now();
+  const stepTime = now - DIAGNOSTIC_START;
+  timings.push({ step, time: stepTime, description });
+  console.log(`🔬 DIAGNOSTIC [${stepTime}ms]: ${step} ${description}`);
+}
+
+logTiming("INIT_START", "- Actor initialization beginning");
+
 await Actor.init();
+
+logTiming("ACTOR_INIT", "- Actor.init() completed");
 
 // Environment-aware credential resolution
 const input = await Actor.getInput();
 const email = input.email;
+
+logTiming("INPUT_RECEIVED", `- Email input: ${email ? 'received' : 'missing'}`);
 
 // Detect deployment environment
 const isApifyDeployment = !!process.env.APIFY_ACTOR_ID;
@@ -55,6 +72,8 @@ if (isApifyDeployment) {
   }
 }
 
+logTiming("CREDENTIALS_VALIDATED", `- Using ${isApifyDeployment ? 'Apify' : 'Local'} mode`);
+
 // Security: Log credential source without exposing sensitive data
 const deploymentMode = isApifyDeployment ? "Apify" : "Local";
 const credentialSource = isApifyDeployment
@@ -77,27 +96,40 @@ console.log(
   JSON.stringify(logSafeCredentials)
 );
 
-// INPUT = { "email": "foo@bar.com" } or { "email": "foo@bar.com", "username": "user", "password": "pass", "crmUrl": "url" }
+logTiming("CRAWLER_INIT_START", "- PuppeteerCrawler initialization beginning");
 
 const crawler = new PuppeteerCrawler({
   maxRequestsPerCrawl: 1,
   async requestHandler({ page, log }) {
+    logTiming("CRAWLER_HANDLER_START", "- Request handler execution beginning");
+    
     /***** 1️⃣  LOGIN *****/
+    logTiming("NAVIGATION_START", `- Navigating to ${credentials.crmUrl}`);
     await page.goto(credentials.crmUrl, { waitUntil: "networkidle2" });
+    logTiming("NAVIGATION_COMPLETE", "- Initial page load completed");
 
     // Wait for and fill username field
     const usernameSelector =
       'input[placeholder*="Username"], input[type="text"], input[name*="username"]';
+    logTiming("USERNAME_SELECTOR_WAIT", "- Waiting for username field");
     await page.waitForSelector(usernameSelector, { visible: true });
+    logTiming("USERNAME_FIELD_FOUND", "- Username field located");
+    
     await page.type(usernameSelector, credentials.username);
+    logTiming("USERNAME_ENTERED", "- Username typed");
 
     // Wait for and fill password field
     const passwordSelector =
       'input[placeholder*="Password"], input[type="password"], input[name*="password"]';
+    logTiming("PASSWORD_SELECTOR_WAIT", "- Waiting for password field");
     await page.waitForSelector(passwordSelector, { visible: true });
+    logTiming("PASSWORD_FIELD_FOUND", "- Password field located");
+    
     await page.type(passwordSelector, credentials.password);
+    logTiming("PASSWORD_ENTERED", "- Password typed");
 
     // Click login button
+    logTiming("LOGIN_CLICK_START", "- Attempting login button click");
     await Promise.all([
       page.waitForNavigation({ waitUntil: "load" }),
       page.evaluate(() => {
@@ -113,39 +145,49 @@ const crawler = new PuppeteerCrawler({
         if (button) button.click();
       }),
     ]);
+    logTiming("LOGIN_NAVIGATION_COMPLETE", "- Login navigation completed");
 
     /***** 2️⃣  SEARCH *****/
     // Wait for page to fully load after login and potential redirects
+    logTiming("POST_LOGIN_WAIT_START", "- Starting post-login stabilization wait");
     await new Promise((resolve) => setTimeout(resolve, 2000));
+    logTiming("POST_LOGIN_WAIT_COMPLETE", "- Post-login wait completed");
 
     // Log current URL to see where we ended up after login
     const currentUrl = page.url();
     log.info(`Current URL after login: ${currentUrl}`);
+    logTiming("URL_CHECK", `- Current URL: ${currentUrl}`);
 
     // If we're still on login page, wait for redirect to main interface
     if (currentUrl.includes("universal-login")) {
       log.info("Still on login page, waiting for redirect...");
+      logTiming("REDIRECT_WAIT_START", "- Waiting for automatic redirect");
       try {
         await page.waitForNavigation({
           waitUntil: "networkidle2",
           timeout: 10000,
         });
         log.info(`Redirected to: ${page.url()}`);
+        logTiming("REDIRECT_COMPLETE", `- Redirected to: ${page.url()}`);
       } catch (e) {
         log.info("No automatic redirect detected, continuing...");
+        logTiming("REDIRECT_TIMEOUT", "- No automatic redirect detected");
       }
     }
 
     // Handle Angular Shadow DOM / Router Outlet structure
     log.info("Looking for Angular mainframe router-outlet...");
+    logTiming("ANGULAR_WAIT_START", "- Starting Angular loading wait (6 seconds)");
 
     // Wait for Angular to fully load the mainframe content (production needs more time)
     await new Promise((resolve) => setTimeout(resolve, 6000));
     log.info("Waited 6 seconds for Angular to load...");
+    logTiming("ANGULAR_WAIT_COMPLETE", "- Angular loading wait completed");
 
     // Verify we're on the main app page (not login page) before looking for Find button
     const pageUrl = page.url();
     log.info(`Current page URL: ${pageUrl}`);
+    logTiming("PAGE_VERIFICATION", `- Verified on: ${pageUrl}`);
 
     if (!pageUrl.includes("app.bullhornstaffing.com")) {
       throw new Error(
@@ -157,8 +199,9 @@ const crawler = new PuppeteerCrawler({
     log.info(
       "🔍 Looking for the Find button to reveal search interface (on app.bullhornstaffing.com)..."
     );
+    logTiming("FIND_BUTTON_SEARCH_START", "- Searching for Find button");
 
-    // --- NEW FIND BUTTON LOGIC ---
+    // --- FIND BUTTON LOGIC ---
     let findButtonFound = false;
     let findButtonError = null;
     try {
@@ -175,6 +218,8 @@ const crawler = new PuppeteerCrawler({
           // If no standard header found, just wait a bit for page to stabilize
           return new Promise((resolve) => setTimeout(resolve, 1000));
         });
+
+      logTiming("HEADER_ELEMENTS_READY", "- Header elements detected/stabilized");
 
       findButtonFound = await page.evaluate(() => {
         // Search for Find button across the entire page, not just in nav
@@ -223,8 +268,6 @@ const crawler = new PuppeteerCrawler({
           }
         }
 
-        // Production: Debug logging removed for performance
-
         return false;
       });
     } catch (e) {
@@ -236,6 +279,8 @@ const crawler = new PuppeteerCrawler({
       log.info(
         "✅ Successfully clicked Find button. Waiting for search input animation..."
       );
+      logTiming("FIND_BUTTON_CLICKED", "- Find button successfully clicked");
+      
       // Wait for the animated search input to appear
       try {
         await page.waitForSelector(
@@ -243,44 +288,55 @@ const crawler = new PuppeteerCrawler({
           { visible: true, timeout: 7000 }
         );
         log.info("✅ Search input appeared.");
+        logTiming("SEARCH_INPUT_APPEARED", "- Search input field became visible");
       } catch (e) {
         log.info("❌ Search input did not appear after clicking Find.");
+        logTiming("SEARCH_INPUT_TIMEOUT", "- Search input failed to appear");
         throw new Error("Search input did not appear after clicking Find.");
       }
     } else {
       log.info("❌ Could not find Find button in nav bar.");
+      logTiming("FIND_BUTTON_FAILED", "- Find button detection failed");
       if (findButtonError) log.info(`Find button error: ${findButtonError}`);
       throw new Error("Could not find Find button in nav bar.");
     }
 
-    // --- SEARCH INPUT INTERACTION WITH CACHE CLEARING ---
+    // --- SEARCH INPUT INTERACTION ---
+    logTiming("SEARCH_INPUT_INTERACTION_START", "- Beginning search input interaction");
     try {
       const searchInput = 'input[placeholder="Find anything in Bullhorn..."]';
 
       // Step 1: Focus and clear any existing content (safer method)
       await page.focus(searchInput);
+      logTiming("SEARCH_INPUT_FOCUSED", "- Search input focused");
 
       // Use Ctrl+A and direct typing to replace content (more reliable than Delete)
       await page.keyboard.down("Control");
       await page.keyboard.press("KeyA");
       await page.keyboard.up("Control");
       await new Promise((resolve) => setTimeout(resolve, 300));
+      logTiming("SEARCH_INPUT_CLEARED", "- Search input content cleared");
 
       // Step 2: Type the email (will replace selected content)
       await page.type(searchInput, email, { delay: 80 });
       log.info(`🔎 Typed email: ${email} - triggering fresh search...`);
+      logTiming("EMAIL_TYPED", `- Email typed: ${email}`);
 
       // Step 3: Wait for Angular to process the search
       log.info("⏳ Waiting for Angular search to complete...");
+      logTiming("SEARCH_PROCESSING_WAIT_START", "- Starting Angular search wait (3 seconds)");
       await new Promise((resolve) => setTimeout(resolve, 3000)); // Standard wait for search
+      logTiming("SEARCH_PROCESSING_WAIT_COMPLETE", "- Angular search processing completed");
 
       log.info("✅ Search processing completed, checking for results...");
     } catch (e) {
       log.info("❌ Failed to interact with search input.");
+      logTiming("SEARCH_INPUT_ERROR", `- Search input interaction failed: ${e.message}`);
       throw new Error("Failed to interact with search input.");
     }
 
-    // --- SMART DROPDOWN DETECTION WITH EARLY EXIT ---
+    // --- DROPDOWN DETECTION ---
+    logTiming("DROPDOWN_DETECTION_START", "- Starting dropdown detection phase");
     let dropdownFound = false;
     let resultRows = [];
     let dropdownSelector = null;
@@ -296,6 +352,7 @@ const crawler = new PuppeteerCrawler({
 
     // Smart detection with early exit
     for (const { selector, timeout } of dropdownSelectors) {
+      logTiming(`DROPDOWN_TRY_${selector.replace(/[^a-zA-Z0-9]/g, '_')}`, `- Trying selector: ${selector} (${timeout}ms timeout)`);
       try {
         await page.waitForSelector(selector, { visible: true, timeout });
         dropdownSelector = selector;
@@ -303,13 +360,16 @@ const crawler = new PuppeteerCrawler({
         log.info(
           `✅ Found dropdown with selector: ${selector} (${timeout}ms timeout)`
         );
+        logTiming("DROPDOWN_FOUND", `- Found with selector: ${selector}`);
         break; // Exit immediately when found
       } catch (e) {
+        logTiming(`DROPDOWN_TIMEOUT_${selector.replace(/[^a-zA-Z0-9]/g, '_')}`, `- Timeout for selector: ${selector}`);
         // Continue to next selector
       }
     }
 
     if (dropdownFound) {
+      logTiming("RESULT_EXTRACTION_START", "- Starting result extraction");
       // Extract results from the dropdown using Novo-specific structure
       resultRows = await page.evaluate((selector) => {
         if (selector === "novo-list") {
@@ -463,6 +523,7 @@ const crawler = new PuppeteerCrawler({
       log.info(
         `Found ${resultRows.length} dropdown items with relevant content using ${dropdownSelector}.`
       );
+      logTiming("RESULT_EXTRACTION_COMPLETE", `- Extracted ${resultRows.length} items`);
 
       // Log summary for monitoring
       if (resultRows.length > 0) {
@@ -478,11 +539,13 @@ const crawler = new PuppeteerCrawler({
         );
         if (hasEmailMatch) {
           log.info("✅ Early exit: Found email match in dropdown results");
+          logTiming("EARLY_EXIT_SUCCESS", "- Email match found, skipping fallbacks");
           dropdownFound = true; // Mark as found to skip fallbacks
         } else {
           log.info(
             "⚠️ No email match found in dropdown results, continuing to fallbacks..."
           );
+          logTiming("NO_MATCH_FALLBACK", "- No email match, continuing to fallbacks");
         }
       }
     }
@@ -492,6 +555,7 @@ const crawler = new PuppeteerCrawler({
       log.info(
         "Dropdown not found with standard selectors. Trying positioning-based search..."
       );
+      logTiming("POSITIONING_FALLBACK_START", "- Starting positioning-based search");
 
       // Get search input position for reference
       const searchInputRect = await page.evaluate(() => {
@@ -547,6 +611,7 @@ const crawler = new PuppeteerCrawler({
           log.info(
             `✅ Found ${resultRows.length} results using positioning-based search.`
           );
+          logTiming("POSITIONING_FALLBACK_SUCCESS", `- Found ${resultRows.length} results via positioning`);
         }
       }
     }
@@ -556,6 +621,7 @@ const crawler = new PuppeteerCrawler({
       log.info(
         "Trying comprehensive DOM search for any elements containing the searched email..."
       );
+      logTiming("COMPREHENSIVE_SEARCH_START", "- Starting comprehensive DOM search");
 
       resultRows = await page.evaluate((searchEmail) => {
         const allElements = Array.from(document.querySelectorAll("*"));
@@ -631,12 +697,12 @@ const crawler = new PuppeteerCrawler({
         log.info(
           `✅ Found ${resultRows.length} results using comprehensive DOM search.`
         );
+        logTiming("COMPREHENSIVE_SEARCH_SUCCESS", `- Found ${resultRows.length} results via comprehensive search`);
       }
     }
 
-    // --- PRODUCTION: DEBUG OVERHEAD REMOVED FOR PERFORMANCE ---
-
     // --- PROCESS RESULTS WITH ENHANCED MATCHING ---
+    logTiming("RESULT_PROCESSING_START", "- Processing search results");
     let exists = false;
     let candidateId = null;
     let matchType = null;
@@ -655,6 +721,7 @@ const crawler = new PuppeteerCrawler({
         log.info(
           `✅ Email found in CRM (exact match). Candidate ID: ${candidateId}`
         );
+        logTiming("EXACT_MATCH_FOUND", `- Exact match found: ${candidateId}`);
       }
 
       // Strategy 2: Partial email match (if no exact match)
@@ -670,6 +737,7 @@ const crawler = new PuppeteerCrawler({
           log.info(
             `✅ Email found in CRM (partial match). Candidate ID: ${candidateId}`
           );
+          logTiming("PARTIAL_MATCH_FOUND", `- Partial match found: ${candidateId}`);
         }
       }
 
@@ -685,6 +753,7 @@ const crawler = new PuppeteerCrawler({
           log.info(
             `✅ Email found in CRM (text contains). Candidate ID: ${candidateId}`
           );
+          logTiming("TEXT_MATCH_FOUND", `- Text contains match found: ${candidateId}`);
         }
       }
 
@@ -702,17 +771,21 @@ const crawler = new PuppeteerCrawler({
           log.info(
             `✅ Email found in CRM (username match). Candidate ID: ${candidateId}`
           );
+          logTiming("USERNAME_MATCH_FOUND", `- Username match found: ${candidateId}`);
         }
       }
 
       if (!match) {
         log.info("❌ No email match found with any strategy.");
+        logTiming("NO_MATCH_FOUND", "- No matches found with any strategy");
       }
     } else {
       log.info("No results found for the given email.");
+      logTiming("NO_RESULTS", "- No search results found");
     }
 
     // --- RETURN JSON ---
+    logTiming("RESULT_PREPARATION", "- Preparing final result");
     const result = {
       email,
       exists,
@@ -723,14 +796,37 @@ const crawler = new PuppeteerCrawler({
 
     // For dataset (backup)
     await Actor.pushData(result);
+    logTiming("DATA_PUSHED", "- Result pushed to dataset");
 
     log.info(
       `${email} ${exists ? "FOUND" : "NOT found"} ${candidateId ?? ""}`.trim()
     );
+
+    // === DIAGNOSTIC SUMMARY ===
+    const totalTime = Date.now() - DIAGNOSTIC_START;
+    console.log(`\n🔬 ======= DIAGNOSTIC SUMMARY =======`);
+    console.log(`📧 Email: ${email}`);
+    console.log(`🎯 Result: ${exists ? 'FOUND' : 'NOT FOUND'}`);
+    console.log(`🆔 Candidate ID: ${candidateId || 'N/A'}`);
+    console.log(`⏱️  Total Time: ${totalTime}ms (${(totalTime/1000).toFixed(1)}s)`);
+    console.log(`📊 Timing Breakdown:`);
+    
+    for (let i = 0; i < timings.length; i++) {
+      const timing = timings[i];
+      const nextTiming = timings[i + 1];
+      const duration = nextTiming ? nextTiming.time - timing.time : totalTime - timing.time;
+      console.log(`   ${timing.step}: ${timing.time}ms (+${duration}ms) ${timing.description}`);
+    }
+    
+    console.log(`🔬 ===================================\n`);
+
+    logTiming("DIAGNOSTIC_COMPLETE", "- Diagnostic analysis completed");
 
     // For Zapier integration - exit with result directly
     await Actor.exit(result);
   },
 });
 
+logTiming("CRAWLER_START", "- Starting crawler execution");
 await crawler.run([credentials.crmUrl]);
+logTiming("EXECUTION_COMPLETE", "- Full execution completed"); 

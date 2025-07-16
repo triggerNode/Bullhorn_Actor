@@ -1,0 +1,93 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "email": {
+      "type": "string",
+      "title": "Email Address",
+      "description": "The candidate email address being checked",
+      "format": "email"
+    },
+    "exists": {
+      "type": "boolean",
+      "title": "Found in Bullhorn?",
+      "description": "Whether the candidate was found in the Bullhorn CRM system"
+    },
+    "candidateId": {
+      "type": ["integer", "null"],
+      "title": "Candidate ID",
+      "description": "Bullhorn candidate ID if found, null if not found"
+    },
+    "matchType": {
+      "type": ["string", "null"],
+      "title": "Match Quality",
+      "description": "Type of match found: exact, partial, text_contains, username, or null",
+      "enum": ["exact", "partial", "text_contains", "username", null]
+    },
+    "timestamp": {
+      "type": "string",
+      "title": "Check Time",
+      "description": "When the email check was performed",
+      "format": "date-time"
+    }
+  },
+  "views": {
+    "overview": {
+      "title": "Email Check Results",
+      "transformation": {
+        "fields": ["email", "exists", "candidateId", "timestamp"]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "email": {
+            "label": "📧 Email Address",
+            "format": "text"
+          },
+          "exists": {
+            "label": "✅ Found in CRM",
+            "format": "boolean"
+          },
+          "candidateId": {
+            "label": "🆔 Candidate ID",
+            "format": "text"
+          },
+          "timestamp": {
+            "label": "⏰ Checked At",
+            "format": "date"
+          }
+        }
+      }
+    },
+    "detailed": {
+      "title": "Detailed Analysis",
+      "transformation": {
+        "fields": ["email", "exists", "candidateId", "matchType", "timestamp"]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "email": {
+            "label": "📧 Email Address",
+            "format": "text"
+          },
+          "exists": {
+            "label": "✅ Found in CRM",
+            "format": "boolean"
+          },
+          "candidateId": {
+            "label": "🆔 Candidate ID",
+            "format": "text"
+          },
+          "matchType": {
+            "label": "🎯 Match Type",
+            "format": "text"
+          },
+          "timestamp": {
+            "label": "⏰ Checked At",
+            "format": "date"
+          }
+        }
+      }
+    }
+  }
+}

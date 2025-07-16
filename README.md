@@ -82,6 +82,7 @@ CRM_URL=https://universal.bullhornstaffing.com/universal-login/login
 ### **Integration Excellence**
 
 - **Seamless Zapier Integration**: Clean JSON output with proper schema propagation
+- **Professional Output Schema**: Recruiter-friendly dashboard views in Apify platform
 - **Professional Deployment**: Proper build tagging and version management
 - **Cross-Platform Compatibility**: Works across development and production environments
 
